@@ -57,7 +57,7 @@
   .spacer { flex: 1; }
 
   .date-banner { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-radius: 12px;
-    background: var(--primary-soft); color: #174ea6; }
+    background: var(--primary-soft); color: #174ea6; flex-wrap: wrap; }
   .date-banner .big { font-size: 20px; font-weight: 700; }
   .date-banner small { display: block; opacity: .8; }
 
@@ -73,12 +73,12 @@
   .opt input:focus-visible + span { box-shadow: 0 0 0 4px var(--primary-soft); }
   .opt input:disabled + span { cursor: not-allowed; background: #f8f9fb; color: #98a2b3; text-decoration: line-through; }
   .opt input:disabled + span small { text-decoration: none; color: var(--bad); }
-  .opt .full small { color: var(--bad); }
 
   .hint { font-size: 13px; color: var(--muted); margin-top: 8px; }
   .alert { padding: 12px 14px; border-radius: 10px; margin-top: 16px; font-size: 14px; }
   .alert.err { background: var(--bad-soft); color: #b42318; }
   .alert.ok { background: var(--ok-soft); color: #067647; }
+  .alert.warn { background: #fff4e5; color: #b54708; }
 
   .empty { text-align: center; padding: 18px 8px; }
   .empty .ic { font-size: 44px; }
@@ -87,7 +87,6 @@
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
   th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
   th { color: var(--muted); font-weight: 600; font-size: 12.5px; text-transform: uppercase; letter-spacing: .4px; }
-  td button { background: none; border: 0; color: var(--bad); cursor: pointer; font: inherit; font-size: 13px; }
 
   .grid-map { display: grid; grid-template-columns: 70px repeat(5, 1fr); gap: 6px; font-size: 12.5px; margin-top: 8px; }
   .grid-map div { padding: 7px 4px; text-align: center; border-radius: 8px; background: #f8f9fb; }
@@ -100,6 +99,7 @@
   .pill { padding: 4px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 600; background: #eef2f6; color: var(--muted); }
   .pill.admin { background: #fdf2fa; color: #c11574; }
   .link { background: none; border: 0; color: var(--primary); font: inherit; font-weight: 600; cursor: pointer; padding: 0; }
+  .loading { text-align: center; color: var(--muted); padding: 40px 0; }
 
   @media (max-width: 480px) {
     .opts.c5 { grid-template-columns: repeat(3, 1fr); }
@@ -119,34 +119,128 @@
 </div>
 
 <script>
-const app = document.getElementById('app');
-let state = null;          // { date, hang, xe, times, taken }
-let role = null;           // 'admin' | 'guest'
-let token = sessionStorage.getItem('adminToken');
-let flash = null;          // { type, text }
+// ================== CẤU HÌNH ==================
+// ID của Google Sheet chứa câu trả lời của form (phần giữa /d/ và /edit trong link Sheet).
+// Sheet phải được chia sẻ "Bất kỳ ai có đường liên kết đều có thể xem".
+const SHEET_ID = '';
 
+const FORM_URL = 'https://docs.google.com/forms/d/e/1FAIpQLScQ3nMH5RqsGl6tiGjSbQboaTapa5XGBnmqmb_9VAUvDR1eUA/formResponse';
+const ENTRY = {
+  date: 'entry.1241184338',
+  teacher: 'entry.866538313',
+  hang: 'entry.1113243409',
+  xe: 'entry.382628882',
+  time: 'entry.1359075680',
+  student: 'entry.1536534655',
+};
+// SHA-256 của mật khẩu admin (Administrator@123)
+const ADMIN_HASH = '8a768f4ba64d9492a67828c66cee26fec0129c07e599ee9ecb1f57520ba6797a';
+// Dòng admin chọn ngày được gửi lên form với TÊN THẦY = dấu này
+const ADMIN_MARK = '#ADMIN';
+
+const HANG = ['B.01', 'B', 'C1'];
+const XE = ['XE 1', 'XE 2', 'XE 3', 'XE 4', 'XE 5'];
+// Mỗi xe có 2 khung giờ; "CẢ 2 GIỜ" chiếm cả hai
 const SLOT = { '6H -7H': ['6-7'], '7H -8H': ['7-8'], 'CẢ 2 GIỜ': ['6-7', '7-8'] };
+const TIMES = Object.keys(SLOT);
+// ==============================================
+
+const app = document.getElementById('app');
+let state = { date: null, bookings: [], error: null };
+let role = null;
+let flash = null;
+
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtDate = (d) => d ? d.split('-').reverse().join('/') : '';
 const weekday = (d) => ['Chủ nhật', 'Thứ hai', 'Thứ ba', 'Thứ tư', 'Thứ năm', 'Thứ sáu', 'Thứ bảy'][new Date(d + 'T00:00').getDay()];
-const taken = (hang, xe) => (state.taken[`${hang}|${xe}`] || []);
+const norm = (s) => String(s ?? '').trim().toUpperCase();
+const pad = (n) => String(n).padStart(2, '0');
 
-async function api(path, opts = {}) {
-  const headers = { 'Content-Type': 'application/json' };
-  if (token) headers.Authorization = 'Bearer ' + token;
-  const r = await fetch(path, { ...opts, headers, body: opts.body && JSON.stringify(opts.body) });
-  const data = await r.json().catch(() => ({}));
-  if (r.status === 401 && role === 'admin' && path !== '/api/admin/login') { logout(); }
-  if (!r.ok) throw Object.assign(new Error(data.error || 'Có lỗi xảy ra'), { data });
-  return data;
+function store(key, val) {
+  try { sessionStorage.setItem(key, JSON.stringify(val)); } catch {}
 }
-async function refresh() { state = await api('/api/state'); }
+function recall(key, fallback) {
+  try { return JSON.parse(sessionStorage.getItem(key)) ?? fallback; } catch { return fallback; }
+}
 
+// ---------- Đọc dữ liệu từ Google Sheet ----------
+// Google Sheet có thể chậm vài chục giây mới hiện câu trả lời mới,
+// nên những gì vừa gửi từ máy này được giữ tạm trong 'pending'.
+const PENDING_MS = 5 * 60 * 1000;
+
+function parseGvizDate(cell) {
+  const m = /Date\((\d+),(\d+),(\d+)/.exec(cell?.v || '');
+  return m ? `${m[1]}-${pad(+m[2] + 1)}-${pad(m[3])}` : null;
+}
+
+async function loadSheet() {
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&headers=1&t=${Date.now()}`;
+  const text = await (await fetch(url)).text();
+  const json = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
+  if (json.status === 'error') throw new Error('Không đọc được Google Sheet (kiểm tra quyền chia sẻ)');
+  const labels = json.table.cols.map((c) => norm(c.label));
+  const col = (title) => labels.findIndex((l) => l.includes(title));
+  const idx = {
+    date: col('NGÀY ĐĂNG KÍ'), teacher: col('TÊN THẦY'), hang: col('HẠNG XE'),
+    xe: labels.findIndex((l) => l === 'XE'), time: col('THỜI GIAN'), student: col('TÊN HỌC VIÊN'),
+  };
+  const val = (r, k) => (idx[k] >= 0 && r.c[idx[k]] ? String(r.c[idx[k]].v ?? '').trim() : '');
+  return json.table.rows.map((r) => ({
+    date: idx.date >= 0 ? parseGvizDate(r.c[idx.date]) : null,
+    teacher: val(r, 'teacher'), hang: val(r, 'hang'), xe: val(r, 'xe'),
+    time: val(r, 'time'), student: val(r, 'student'),
+  }));
+}
+
+const sameBooking = (a, b) => a.date === b.date && a.hang === b.hang && a.xe === b.xe && a.time === b.time && norm(a.student) === norm(b.student);
+
+async function refresh() {
+  if (!SHEET_ID) { state = { date: null, bookings: [], error: 'config' }; return; }
+  let rows;
+  try { rows = await loadSheet(); }
+  catch (e) { state = { date: null, bookings: [], error: e.message }; return; }
+
+  const now = Date.now();
+  const pending = recall('pending', []).filter((p) => now - p.at < PENDING_MS && !rows.some((r) => sameBooking(r, p)));
+  store('pending', pending);
+
+  // Ngày đăng kí = dòng admin mới nhất (dòng cuối cùng trong sheet)
+  let date = null;
+  for (const r of rows) if (r.teacher === ADMIN_MARK && r.date) date = r.date;
+  const pendingDate = recall('pendingDate', null);
+  if (pendingDate && now - pendingDate.at < PENDING_MS && pendingDate.date !== date) date = pendingDate.date;
+
+  const bookings = [...rows, ...pending].filter((r) => r.teacher !== ADMIN_MARK && r.date === date && SLOT[r.time]);
+  state = { date, bookings, error: null };
+}
+
+function taken(hang, xe) {
+  return state.bookings.filter((b) => b.hang === hang && b.xe === xe).flatMap((b) => SLOT[b.time]);
+}
+
+// ---------- Gửi lên Google Form ----------
+async function submitGoogle(data) {
+  const params = new URLSearchParams({ fvv: '1', pageHistory: '0' });
+  const [y, m, d] = data.date.split('-');
+  params.set(`${ENTRY.date}_year`, y);
+  params.set(`${ENTRY.date}_month`, String(+m));
+  params.set(`${ENTRY.date}_day`, String(+d));
+  for (const k of ['teacher', 'hang', 'xe', 'time', 'student']) if (data[k]) params.set(ENTRY[k], data[k]);
+  // Google Form không cho đọc phản hồi từ trang khác (no-cors), chỉ cần gửi được là xong
+  await fetch(FORM_URL, { method: 'POST', mode: 'no-cors', body: params });
+}
+
+// ---------- Giao diện chung ----------
 function alertHtml() {
   if (!flash) return '';
   const h = `<div class="alert ${flash.type}">${esc(flash.text)}</div>`;
   flash = null;
   return h;
+}
+function errorHtml() {
+  if (state.error === 'config') return '<div class="alert warn">Chưa cấu hình Google Sheet (SHEET_ID trong index.html), nên chưa đọc được ngày đăng kí và lịch đã đặt.</div>';
+  if (state.error) return `<div class="alert err">${esc(state.error)}</div>`;
+  return '';
 }
 function topbar() {
   return `<div class="topbar">
@@ -155,8 +249,9 @@ function topbar() {
     <button class="link" onclick="logout()">Đổi vai trò</button>
   </div>`;
 }
+function loading() { app.innerHTML = '<div class="loading">Đang tải dữ liệu…</div>'; }
 
-// ---------- Màn hình chọn vai trò ----------
+// ---------- Chọn vai trò ----------
 function viewRoles() {
   app.innerHTML = `<div class="card">
     <h2>Bạn là ai?</h2>
@@ -168,8 +263,13 @@ function viewRoles() {
   </div>`;
 }
 function pickGuest() { role = 'guest'; viewForm(); }
+
+async function sha256(s) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
 function pickAdmin() {
-  if (token) { role = 'admin'; return viewAdmin(); }
+  if (recall('isAdmin', false)) { role = 'admin'; return viewAdmin(); }
   app.innerHTML = `<div class="card">
     <h2>Đăng nhập Admin</h2>
     <p class="sub">Nhập mật khẩu quản trị</p>
@@ -186,57 +286,54 @@ function pickAdmin() {
   </div>`;
   document.getElementById('f').onsubmit = async (e) => {
     e.preventDefault();
-    try {
-      const r = await api('/api/admin/login', { method: 'POST', body: { password: pw.value } });
-      token = r.token; sessionStorage.setItem('adminToken', token); role = 'admin';
-      viewAdmin();
-    } catch (err) { flash = { type: 'err', text: err.message }; pickAdmin(); }
+    if (await sha256(pw.value) !== ADMIN_HASH) { flash = { type: 'err', text: 'Mật khẩu không đúng' }; return pickAdmin(); }
+    store('isAdmin', true); role = 'admin';
+    viewAdmin();
   };
 }
 function logout() {
-  token = null; role = null; sessionStorage.removeItem('adminToken');
+  role = null; store('isAdmin', false);
   viewRoles();
 }
 
 // ---------- Admin ----------
 let editingDate = false;
-async function viewAdmin() {
-  await refresh();
+async function viewAdmin(reload = true) {
+  if (reload) { loading(); await refresh(); }
   if (!state.date) editingDate = true;
+
   const dateBlock = editingDate
     ? `<form id="df">
         <label class="f" for="d">Ngày đăng kí tập xe <span class="req">*</span></label>
         <input type="date" id="d" value="${state.date || ''}" required>
         <div class="row" style="margin-top:14px">
-          ${state.date ? '<button type="button" class="btn ghost" onclick="editingDate=false;viewAdmin()">Huỷ</button>' : ''}
+          ${state.date ? '<button type="button" class="btn ghost" onclick="editingDate=false;viewAdmin(false)">Huỷ</button>' : ''}
           <span class="spacer"></span>
-          <button class="btn">💾 Lưu ngày</button>
+          <button class="btn" id="ds">💾 Lưu ngày</button>
         </div>
       </form>`
     : `<div class="date-banner"><div>📅</div><div><small>Ngày đăng kí hiện tại</small>
          <div class="big">${weekday(state.date)}, ${fmtDate(state.date)}</div></div>
          <span class="spacer"></span>
-         <button class="btn" onclick="editingDate=true;viewAdmin()">Đổi ngày</button></div>`;
+         <button class="btn" onclick="editingDate=true;viewAdmin(false)">Đổi ngày</button></div>`;
 
-  let list = '';
-  if (state.date) {
-    const { bookings } = await api('/api/admin/bookings');
-    list = `<div class="card">
-      <div class="row"><h2>Lịch đã đặt</h2><span class="spacer"></span><span class="pill">${bookings.length} lượt</span></div>
+  const list = state.date ? `<div class="card">
+      <div class="row"><h2>Lịch đã đặt</h2><span class="spacer"></span><span class="pill">${state.bookings.length} lượt</span>
+        <button class="link" onclick="viewAdmin()">↻ Tải lại</button></div>
       ${mapHtml()}
-      ${bookings.length ? `<div class="table-wrap"><table>
-        <tr><th>Hạng</th><th>Xe</th><th>Giờ</th><th>Học viên</th><th>Thầy</th><th></th></tr>
-        ${bookings.map((b) => `<tr><td>${esc(b.hang)}</td><td>${esc(b.xe)}</td><td>${esc(b.time)}</td>
-          <td>${esc(b.student)}</td><td>${esc(b.teacher)}</td>
-          <td><button onclick="removeBooking('${b.id}')" title="Chỉ xoá trên web để giải phóng khung giờ">Xoá</button></td></tr>`).join('')}
-      </table></div>` : '<p class="hint">Chưa có ai đặt xe cho ngày này.</p>'}
-    </div>`;
-  }
+      ${state.bookings.length ? `<div class="table-wrap"><table>
+        <tr><th>Hạng</th><th>Xe</th><th>Giờ</th><th>Học viên</th><th>Thầy</th></tr>
+        ${state.bookings.map((b) => `<tr><td>${esc(b.hang)}</td><td>${esc(b.xe)}</td><td>${esc(b.time)}</td>
+          <td>${esc(b.student)}</td><td>${esc(b.teacher)}</td></tr>`).join('')}
+      </table></div>
+      <p class="hint">Muốn huỷ một lượt đặt: xoá dòng tương ứng trong Google Sheet.</p>` : '<p class="hint">Chưa có ai đặt xe cho ngày này.</p>'}
+    </div>` : '';
 
   app.innerHTML = `${topbar()}
     <div class="card">
       <h2>Quản lý ngày đăng kí</h2>
       <p class="sub">Khách chỉ đặt xe được khi đã có ngày đăng kí.</p>
+      ${errorHtml()}
       ${dateBlock}
       ${alertHtml()}
       ${state.date && !editingDate ? '<button class="btn block" onclick="viewForm()">📝 Mở form đặt xe</button>' : ''}
@@ -246,31 +343,33 @@ async function viewAdmin() {
   const df = document.getElementById('df');
   if (df) df.onsubmit = async (e) => {
     e.preventDefault();
+    const date = d.value;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+    ds.disabled = true; ds.textContent = 'Đang lưu…';
     try {
-      await api('/api/admin/date', { method: 'POST', body: { date: d.value } });
-      editingDate = false; flash = { type: 'ok', text: 'Đã cập nhật ngày đăng kí.' };
-    } catch (err) { flash = { type: 'err', text: err.message }; }
+      await submitGoogle({ date, teacher: ADMIN_MARK, student: 'Admin chọn ngày đăng kí' });
+      store('pendingDate', { date, at: Date.now() });
+      editingDate = false;
+      flash = { type: 'ok', text: 'Đã cập nhật ngày đăng kí.' };
+    } catch {
+      flash = { type: 'err', text: 'Không gửi được, kiểm tra kết nối mạng.' };
+    }
     viewAdmin();
   };
-}
-async function removeBooking(id) {
-  await api('/api/admin/bookings/' + encodeURIComponent(id), { method: 'DELETE' });
-  flash = { type: 'ok', text: 'Đã xoá lượt đặt (dữ liệu đã gửi lên Google Form vẫn giữ nguyên).' };
-  viewAdmin();
 }
 function mapHtml() {
   const cell = (h, x) => { const n = taken(h, x).length; return `<div class="s${n}">${n === 0 ? 'Trống' : n === 1 ? '1/2' : 'Đầy'}</div>`; };
   return `<div class="grid-map">
-    <div class="h"></div>${state.xe.map((x) => `<div class="h">${x}</div>`).join('')}
-    ${state.hang.map((h) => `<div class="h">${h}</div>${state.xe.map((x) => cell(h, x)).join('')}`).join('')}
+    <div class="h"></div>${XE.map((x) => `<div class="h">${x}</div>`).join('')}
+    ${HANG.map((h) => `<div class="h">${h}</div>${XE.map((x) => cell(h, x)).join('')}`).join('')}
   </div>`;
 }
 
 // ---------- Form đặt xe ----------
 const form = { teacher: '', hang: '', xe: '', time: '', student: '' };
 
-async function viewForm() {
-  await refresh();
+async function viewForm(reload = true) {
+  if (reload) { loading(); await refresh(); }
   const back = role === 'admin' ? '<button class="btn ghost" onclick="viewAdmin()">← Về trang admin</button>' : '';
 
   if (!state.date) {
@@ -278,7 +377,8 @@ async function viewForm() {
       <div class="ic">⏳</div>
       <h2>Chưa mở đăng kí</h2>
       <p class="sub">Admin chưa chọn ngày đăng kí tập xe. Vui lòng quay lại sau.</p>
-      <button class="btn" onclick="viewForm()">↻ Tải lại</button>
+      ${errorHtml()}
+      <button class="btn" style="margin-top:16px" onclick="viewForm()">↻ Tải lại</button>
     </div>`;
     return;
   }
@@ -288,7 +388,7 @@ async function viewForm() {
   if (form.time && (!form.xe || SLOT[form.time].some((s) => taken(form.hang, form.xe).includes(s)))) form.time = '';
 
   const radios = (name, values, label, disabledFn) => values.map((v) => {
-    const dis = disabledFn ? disabledFn(v) : '';
+    const dis = disabledFn ? disabledFn(v) : false;
     return `<label class="opt"><input type="radio" name="${name}" value="${esc(v)}" ${form[name] === v ? 'checked' : ''} ${dis ? 'disabled' : ''}>
       <span>${esc(v)}${label ? `<small>${label(v, dis)}</small>` : ''}</span></label>`;
   }).join('');
@@ -311,14 +411,14 @@ async function viewForm() {
         <input type="text" id="teacher" name="teacher" value="${esc(form.teacher)}" placeholder="Nhập tên thầy hướng dẫn">
 
         <label class="f">Hạng xe <span class="req">*</span></label>
-        <div class="opts c3">${radios('hang', state.hang)}</div>
+        <div class="opts c3">${radios('hang', HANG)}</div>
 
         <label class="f">Xe <span class="req">*</span></label>
-        <div class="opts c5">${radios('xe', state.xe, xeLabel, (x) => !form.hang || taken(form.hang, x).length >= 2)}</div>
+        <div class="opts c5">${radios('xe', XE, xeLabel, (x) => !form.hang || taken(form.hang, x).length >= 2)}</div>
         ${!form.hang ? '<div class="hint">Chọn hạng xe để xem xe còn trống.</div>' : ''}
 
         <label class="f">Thời gian <span class="req">*</span></label>
-        <div class="opts c3">${radios('time', state.times, timeLabel, timeDisabled)}</div>
+        <div class="opts c3">${radios('time', TIMES, timeLabel, timeDisabled)}</div>
         <div class="hint">Mỗi xe có 2 khung giờ (6H–7H, 7H–8H). Mỗi khung giờ chỉ 1 người đặt.</div>
 
         <label class="f" for="student">Tên học viên <span class="req">*</span></label>
@@ -337,7 +437,7 @@ async function viewForm() {
     form[e.target.name] = e.target.value;
     if (e.target.name === 'hang') { form.xe = ''; form.time = ''; }
     if (e.target.name === 'xe') form.time = '';
-    viewForm();
+    viewForm(false);
   });
   bf.onsubmit = submitForm;
 }
@@ -350,16 +450,27 @@ async function submitForm(e) {
   if (!form.xe) missing.push('xe');
   if (!form.time) missing.push('thời gian');
   if (!form.student.trim()) missing.push('tên học viên');
-  if (missing.length) { flash = { type: 'err', text: 'Vui lòng nhập/chọn: ' + missing.join(', ') + '.' }; return viewForm(); }
+  if (missing.length) { flash = { type: 'err', text: 'Vui lòng nhập/chọn: ' + missing.join(', ') + '.' }; return viewForm(false); }
 
   const sb = document.getElementById('sb');
-  sb.disabled = true; sb.textContent = 'Đang gửi...';
+  sb.disabled = true; sb.textContent = 'Đang gửi…';
+
+  // Tải lại lịch ngay trước khi gửi để tránh đặt trùng
+  await refresh();
+  if (!state.date) { flash = { type: 'err', text: 'Admin chưa chọn ngày đăng kí.' }; return viewForm(false); }
+  if (SLOT[form.time].some((s) => taken(form.hang, form.xe).includes(s))) {
+    flash = { type: 'err', text: `${form.xe} hạng ${form.hang} vừa có người đặt khung giờ này, vui lòng chọn lại.` };
+    return viewForm(false);
+  }
+
+  const booking = { date: state.date, teacher: form.teacher.trim(), hang: form.hang, xe: form.xe, time: form.time, student: form.student.trim() };
   try {
-    const r = await api('/api/submit', { method: 'POST', body: form });
-    viewSuccess(r.booking);
-  } catch (err) {
-    flash = { type: 'err', text: err.message };
-    viewForm();
+    await submitGoogle(booking);
+    store('pending', [...recall('pending', []), { ...booking, at: Date.now() }]);
+    viewSuccess(booking);
+  } catch {
+    flash = { type: 'err', text: 'Không gửi được lên Google Form, kiểm tra kết nối mạng.' };
+    viewForm(false);
   }
 }
 
