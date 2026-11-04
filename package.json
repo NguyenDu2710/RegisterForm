@@ -1,0 +1,8 @@
+{
+  "name": "dat-xe-thuc-hanh",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Web đặt xe thực hành, gửi dữ liệu lên Google Form",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}
