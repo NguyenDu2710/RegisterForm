@@ -135,8 +135,6 @@ const ENTRY = {
 };
 // SHA-256 của mật khẩu admin (Administrator@123)
 const ADMIN_HASH = '8a768f4ba64d9492a67828c66cee26fec0129c07e599ee9ecb1f57520ba6797a';
-// Dòng admin chọn ngày được gửi lên form với TÊN THẦY = dấu này
-const ADMIN_MARK = '#ADMIN';
 
 const HANG = ['B.01', 'B', 'C1'];
 const XE = ['XE 1', 'XE 2', 'XE 3', 'XE 4', 'XE 5'];
@@ -195,23 +193,21 @@ async function loadSheet() {
 const sameBooking = (a, b) => a.date === b.date && a.hang === b.hang && a.xe === b.xe && a.time === b.time && norm(a.student) === norm(b.student);
 
 async function refresh() {
-  if (!SHEET_ID) { state = { date: null, bookings: [], error: 'config' }; return; }
-  let rows;
-  try { rows = await loadSheet(); }
-  catch (e) { state = { date: null, bookings: [], error: e.message }; return; }
+  // Ngày đăng kí chỉ lưu trong phiên trình duyệt này (đóng tab là mất)
+  const date = recall('regDate', null);
+  let rows = [], error = null;
+  if (!SHEET_ID) error = 'config';
+  else {
+    try { rows = await loadSheet(); }
+    catch (e) { error = e.message; }
+  }
 
   const now = Date.now();
   const pending = recall('pending', []).filter((p) => now - p.at < PENDING_MS && !rows.some((r) => sameBooking(r, p)));
   store('pending', pending);
 
-  // Ngày đăng kí = dòng admin mới nhất (dòng cuối cùng trong sheet)
-  let date = null;
-  for (const r of rows) if (r.teacher === ADMIN_MARK && r.date) date = r.date;
-  const pendingDate = recall('pendingDate', null);
-  if (pendingDate && now - pendingDate.at < PENDING_MS && pendingDate.date !== date) date = pendingDate.date;
-
-  const bookings = [...rows, ...pending].filter((r) => r.teacher !== ADMIN_MARK && r.date === date && SLOT[r.time]);
-  state = { date, bookings, error: null };
+  const bookings = [...rows, ...pending].filter((r) => r.date === date && SLOT[r.time]);
+  state = { date, bookings, error };
 }
 
 function taken(hang, xe) {
@@ -238,7 +234,7 @@ function alertHtml() {
   return h;
 }
 function errorHtml() {
-  if (state.error === 'config') return '<div class="alert warn">Chưa cấu hình Google Sheet (SHEET_ID trong index.html), nên chưa đọc được ngày đăng kí và lịch đã đặt.</div>';
+  if (state.error === 'config') return '<div class="alert warn">Chưa cấu hình Google Sheet (SHEET_ID trong index.html), nên chưa kiểm tra được xe/khung giờ đã có người đặt.</div>';
   if (state.error) return `<div class="alert err">${esc(state.error)}</div>`;
   return '';
 }
@@ -332,7 +328,7 @@ async function viewAdmin(reload = true) {
   app.innerHTML = `${topbar()}
     <div class="card">
       <h2>Quản lý ngày đăng kí</h2>
-      <p class="sub">Khách chỉ đặt xe được khi đã có ngày đăng kí.</p>
+      <p class="sub">Ngày chỉ lưu trong phiên trình duyệt này. Đóng tab thì phải chọn lại.</p>
       ${errorHtml()}
       ${dateBlock}
       ${alertHtml()}
@@ -345,15 +341,9 @@ async function viewAdmin(reload = true) {
     e.preventDefault();
     const date = d.value;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
-    ds.disabled = true; ds.textContent = 'Đang lưu…';
-    try {
-      await submitGoogle({ date, teacher: ADMIN_MARK, student: 'Admin chọn ngày đăng kí' });
-      store('pendingDate', { date, at: Date.now() });
-      editingDate = false;
-      flash = { type: 'ok', text: 'Đã cập nhật ngày đăng kí.' };
-    } catch {
-      flash = { type: 'err', text: 'Không gửi được, kiểm tra kết nối mạng.' };
-    }
+    store('regDate', date);
+    editingDate = false;
+    flash = { type: 'ok', text: 'Đã cập nhật ngày đăng kí.' };
     viewAdmin();
   };
 }
@@ -405,6 +395,7 @@ async function viewForm(reload = true) {
     <div class="card">
       <div class="date-banner"><div>📅</div><div><small>Ngày đăng kí tập xe</small>
         <div class="big">${weekday(state.date)}, ${fmtDate(state.date)}</div></div></div>
+      ${errorHtml()}
 
       <form id="bf" novalidate>
         <label class="f" for="teacher">Tên thầy <span class="req">*</span></label>
